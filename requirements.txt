@@ -5,5 +5,4 @@ pandas
 scipy
 pydantic
 requests
-pydub
-imageio-ffmpeg
+soundfile

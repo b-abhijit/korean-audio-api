@@ -8,18 +8,12 @@ Returns:  a JSON object with rows/columns/mean/std/... statistics
 
 import base64
 import io
-import wave
 
 import numpy as np
 import pandas as pd
+import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from pydub import AudioSegment
-import imageio_ffmpeg
-
-# pydub needs to know where ffmpeg lives; imageio_ffmpeg bundles a portable
-# binary so we don't depend on the host machine having ffmpeg installed.
-AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
 
 app = FastAPI(title="Korean Audio Dataset API")
 
@@ -29,57 +23,21 @@ class AudioRequest(BaseModel):
     audio_base64: str
 
 
-def decode_wav_to_dataframe(audio_bytes: bytes):
-    """Turn raw WAV bytes into a pandas DataFrame (one column per channel)."""
-    with wave.open(io.BytesIO(audio_bytes), "rb") as wf:
-        n_channels = wf.getnchannels()
-        sampwidth = wf.getsampwidth()
-        frames = wf.readframes(wf.getnframes())
-
-    # map byte-width to a numpy integer type
-    dtype_map = {1: np.int8, 2: np.int16, 4: np.int32}
-    dtype = dtype_map.get(sampwidth, np.int16)
-
-    samples = np.frombuffer(frames, dtype=dtype)
-
-    if n_channels > 1:
-        samples = samples.reshape(-1, n_channels)
-        df = pd.DataFrame(samples, columns=[f"channel_{i}" for i in range(n_channels)])
-    else:
-        df = pd.DataFrame({"channel_0": samples})
-
-    return df, dtype, sampwidth
-
-
-def decode_compressed_to_dataframe(audio_bytes: bytes):
-    """Turn MP3 (or other ffmpeg-readable compressed audio) into a DataFrame."""
-    segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
-
-    sampwidth = segment.sample_width  # bytes per sample, e.g. 2 for 16-bit
-    n_channels = segment.channels
-
-    dtype_map = {1: np.int8, 2: np.int16, 4: np.int32}
-    dtype = dtype_map.get(sampwidth, np.int16)
-
-    samples = np.array(segment.get_array_of_samples(), dtype=dtype)
-
-    if n_channels > 1:
-        samples = samples.reshape(-1, n_channels)
-        df = pd.DataFrame(samples, columns=[f"channel_{i}" for i in range(n_channels)])
-    else:
-        df = pd.DataFrame({"channel_0": samples})
-
-    return df, dtype, sampwidth
-
-
 def decode_audio_to_dataframe(audio_bytes: bytes):
-    """Detect format by magic bytes and dispatch to the right decoder."""
-    if audio_bytes[:4] == b"RIFF":
-        # Standard uncompressed WAV file
-        return decode_wav_to_dataframe(audio_bytes)
-    else:
-        # MP3 (ID3 tag or raw frame sync) or any other ffmpeg-readable format
-        return decode_compressed_to_dataframe(audio_bytes)
+    """
+    Decode WAV, MP3, FLAC, OGG, etc. into a pandas DataFrame (one column
+    per channel). soundfile handles format detection internally and needs
+    no external ffmpeg/ffprobe binaries -- it's a self-contained library.
+    """
+    samples, samplerate = sf.read(io.BytesIO(audio_bytes), dtype="int16", always_2d=True)
+    # samples shape: (n_frames, n_channels)
+    n_channels = samples.shape[1]
+    dtype = samples.dtype
+    sampwidth = dtype.itemsize
+
+    df = pd.DataFrame(samples, columns=[f"channel_{i}" for i in range(n_channels)])
+
+    return df, dtype, sampwidth
 
 
 def to_py(obj):

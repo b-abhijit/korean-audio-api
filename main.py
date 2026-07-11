@@ -8,14 +8,28 @@ Returns:  a JSON object with rows/columns/mean/std/... statistics
 
 import base64
 import io
+import re
+import tempfile
 
 import numpy as np
 import pandas as pd
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from faster_whisper import WhisperModel
 
 app = FastAPI(title="Korean Audio Dataset API")
+
+# Load once and reuse across requests (avoids reloading the model every call).
+_whisper_model = None
+
+
+def get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        # "base" balances accuracy vs size/speed; int8 keeps memory/CPU low.
+        _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    return _whisper_model
 
 
 class AudioRequest(BaseModel):
@@ -38,6 +52,24 @@ def decode_audio_to_dataframe(audio_bytes: bytes):
     df = pd.DataFrame(samples, columns=[f"channel_{i}" for i in range(n_channels)])
 
     return df, dtype, sampwidth
+
+
+def transcribe_column_name(audio_bytes: bytes) -> str:
+    """
+    The audio clip contains a short spoken Korean word/phrase that names
+    the data column (e.g. "점수" = "score"). Transcribe it with Whisper
+    and clean up the text to use as a column name.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".audio") as tmp:
+        tmp.write(audio_bytes)
+        tmp.flush()
+        model = get_whisper_model()
+        segments, _info = model.transcribe(tmp.name, language="ko", beam_size=1)
+        text = "".join(seg.text for seg in segments)
+
+    # Strip whitespace and common punctuation so "점수." or " 점수 " -> "점수"
+    cleaned = re.sub(r"[\s.,!?~·]", "", text)
+    return cleaned
 
 
 def to_py(obj):
@@ -66,6 +98,19 @@ def analyze(req: AudioRequest):
         df, dtype, sampwidth = decode_audio_to_dataframe(audio_bytes)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
+
+    try:
+        column_name = transcribe_column_name(audio_bytes)
+    except Exception:
+        column_name = ""
+
+    if not column_name:
+        column_name = "channel_0"
+
+    if len(df.columns) == 1:
+        df.columns = [column_name]
+    else:
+        df.columns = [f"{column_name}_{i}" for i in range(len(df.columns))]
 
     result = {
         "rows": len(df),

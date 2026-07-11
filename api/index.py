@@ -67,8 +67,6 @@ def analyze(req: AudioRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
 
-    iinfo = np.iinfo(dtype)
-
     result = {
         "rows": len(df),
         "columns": list(df.columns),
@@ -80,11 +78,8 @@ def analyze(req: AudioRequest):
         "median": df.median().to_dict(),
         "mode": df.mode().iloc[0].to_dict() if not df.mode().empty else {},
         "range": (df.astype(np.int64).max() - df.astype(np.int64).min()).to_dict(),
-        "allowed_values": {
-            "dtype": str(dtype.__name__ if hasattr(dtype, "__name__") else dtype),
-            "sample_width_bytes": sampwidth,
-        },
-        "value_range": {"min": int(iinfo.min), "max": int(iinfo.max)},
+        "allowed_values": {},
+        "value_range": {},
         "correlation": df.corr().round(4).values.tolist() if len(df.columns) > 1 else [[1.0]],
     }
 

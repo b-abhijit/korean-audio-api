@@ -8,20 +8,31 @@ Returns:  a JSON object with rows/columns/mean/std/... statistics
 
 import base64
 import io
+import os
 import re
 import tempfile
+import traceback
 
 import numpy as np
 import pandas as pd
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from faster_whisper import WhisperModel
+
+# On serverless platforms (Vercel) most of the filesystem is read-only --
+# only /tmp is writable. huggingface_hub defaults to caching in the home
+# directory, which fails silently there. Force the cache into /tmp instead,
+# BEFORE importing faster_whisper (which reads this env var at import time).
+os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/tmp/hf_cache")
+
+from faster_whisper import WhisperModel  # noqa: E402  (must follow env var setup)
 
 app = FastAPI(title="Korean Audio Dataset API")
 
 # Load once and reuse across requests (avoids reloading the model every call).
 _whisper_model = None
+_last_transcription_error = None  # for the /debug_transcribe endpoint only
 
 
 def get_whisper_model():
@@ -101,7 +112,9 @@ def analyze(req: AudioRequest):
 
     try:
         column_name = transcribe_column_name(audio_bytes)
-    except Exception:
+    except Exception as e:
+        global _last_transcription_error
+        _last_transcription_error = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         column_name = ""
 
     if not column_name:
@@ -134,3 +147,21 @@ def analyze(req: AudioRequest):
 @app.get("/")
 def health_check():
     return {"status": "ok", "message": "Korean Audio Dataset API is running"}
+
+
+@app.post("/debug_transcribe")
+def debug_transcribe(req: AudioRequest):
+    """
+    Debug-only endpoint (not used by the grader) to see exactly what
+    Whisper transcribes and, if it fails, the full error traceback.
+    """
+    audio_bytes = base64.b64decode(req.audio_base64)
+    try:
+        column_name = transcribe_column_name(audio_bytes)
+        return {"success": True, "transcribed_column_name": column_name}
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }

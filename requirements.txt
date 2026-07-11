@@ -6,4 +6,3 @@ scipy
 pydantic
 requests
 soundfile
-faster-whisper

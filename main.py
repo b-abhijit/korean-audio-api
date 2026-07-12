@@ -248,12 +248,7 @@ def analyze(req: AudioRequest):
             "range": {},
             "allowed_values": {},
             "value_range": {},
-            "correlation": [],
-            "std": {},
-            "variance": {"소득": 0},
-            "median": {},
-            "range": {},
-            "value_range": {"소득": [0, 0]},
+            "correlation": []
         }
 
 

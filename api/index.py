@@ -69,7 +69,10 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
     resp = requests.post(
         AIPIPE_TRANSCRIBE_URL, headers=headers, files=files, data=data, timeout=30
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface AI Pipe's actual error message instead of a generic
+        # "400 Bad Request" with no context.
+        raise RuntimeError(f"AI Pipe returned {resp.status_code}: {resp.text}")
     text = resp.json().get("text", "")
 
     # Strip whitespace and common punctuation so "점수." or " 점수 " -> "점수"

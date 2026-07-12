@@ -6,8 +6,8 @@ Returns: a JSON object with rows/columns/mean/std/... statistics.
 
 Conservative strategy:
 - Transcribe the audio with AI Pipe / Gemini.
-- Extract the column name and only explicitly spoken stats.
-- Do NOT invent other stats.
+- Parse row count, column name, and explicitly spoken stats.
+- Do not invent any other fields.
 """
 
 import base64
@@ -58,17 +58,6 @@ KOR_DIGITS = {
     "칠": 7, "일곱": 7,
     "팔": 8, "여덟": 8,
     "구": 9, "아홉": 9,
-}
-
-STAT_PATTERNS = {
-    "mean": "평균",
-    "std": "표준편차",
-    "variance": "분산",
-    "min": "최소값",
-    "max": "최대값",
-    "median": "중앙값",
-    "mode": "최빈값",
-    "range": "범위",
 }
 
 _last_q16_payload = {"audio_base64": None}
@@ -194,9 +183,23 @@ def hangul_number_to_int(text: str) -> int | None:
     return total if matched else None
 
 
+def extract_row_count(text: str) -> int | None:
+    text = normalize_text(text)
+    m = re.search(r"([가-힣0-9]+?)\s*개의\s*행", text)
+    if m:
+        return hangul_number_to_int(m.group(1))
+    m = re.search(r"([가-힣0-9]+?)\s*행", text)
+    if m:
+        return hangul_number_to_int(m.group(1))
+    m = re.search(r"(\d+)\s*행", text)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def extract_column_name(text: str) -> str | None:
     text = normalize_text(text)
-    m = re.search(r"([가-힣A-Za-z0-9_]+?)의\s*(최빈값|평균|분산|중앙값|최소값|최대값|범위|표준편차)", text)
+    m = re.search(r"([가-힣A-Za-z0-9_]+?)의\s*(?:최빈값|평균|분산|중앙값|최소값|최대값|범위|표준편차)", text)
     if m:
         return m.group(1)
     m = re.search(r"([가-힣A-Za-z0-9_]+?)\s*열", text)
@@ -206,12 +209,12 @@ def extract_column_name(text: str) -> str | None:
 
 
 def extract_stat_value(text: str, korean_stat_name: str) -> Any | None:
+    text = normalize_text(text)
     m = re.search(rf"{korean_stat_name}은\s*([^\s]+)", text)
     if not m:
         return None
 
     raw = clean_numeric_phrase(m.group(1))
-
     num = hangul_number_to_int(raw)
     if num is not None:
         return num
@@ -225,12 +228,13 @@ def extract_stat_value(text: str, korean_stat_name: str) -> Any | None:
 def build_response_from_transcript(transcript: str) -> dict:
     text = normalize_text(transcript)
     column = extract_column_name(text)
+    rows = extract_row_count(text)
 
     if not column:
         return EMPTY_RESULT
 
     response = {
-        "rows": 0,
+        "rows": rows if rows is not None else 0,
         "columns": [column],
         "mean": {},
         "std": {},
@@ -245,10 +249,9 @@ def build_response_from_transcript(transcript: str) -> dict:
         "correlation": [],
     }
 
-    for json_key, korean_name in STAT_PATTERNS.items():
-        value = extract_stat_value(text, korean_name)
-        if value is not None:
-            response[json_key] = {column: value}
+    mode_value = extract_stat_value(text, "최빈값")
+    if mode_value is not None:
+        response["mode"] = {column: mode_value}
 
     return response
 
@@ -270,7 +273,6 @@ def analyze(req: AudioRequest):
         return EMPTY_RESULT
 
     logger.info("audio_id=%s transcript=%s", req.audio_id, transcript)
-
     return build_response_from_transcript(transcript)
 
 
@@ -279,7 +281,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-spoken-stats-only-v2",
+        "version": "2026-q16-row-parser-v1",
     }
 
 
@@ -288,11 +290,10 @@ def debug_transcribe(req: AudioRequest):
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
         transcript = transcribe_full_audio(audio_bytes)
-        response_preview = build_response_from_transcript(transcript)
         return {
             "success": True,
             "transcript": transcript,
-            "response_preview": response_preview,
+            "response_preview": build_response_from_transcript(transcript),
         }
     except Exception as e:
         return {

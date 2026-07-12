@@ -65,6 +65,8 @@ KOR_DIGITS = {
 
 STAT_WORDS = ["최빈값", "평균", "분산", "중앙값", "최소값", "최대값", "범위"]
 
+_last_q16_payload = {"audio_base64": None}
+
 
 class AudioRequest(BaseModel):
     audio_id: str

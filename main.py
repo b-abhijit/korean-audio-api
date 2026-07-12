@@ -161,37 +161,39 @@ def analyze(req: AudioRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
 
-    # Some clips are empty/silent. "Empty" here means either zero frames
-    # (a truncated/corrupt file) OR real duration but total digital
-    # silence (every sample is 0) -- both cases have no real data to
-    # name or summarize, so return the fully empty structure instead of
-    # forcing stats out of it (which would produce NaN-keyed dicts like
-    # {"점수": NaN} instead of {}).
-    is_silent = len(df) == 0 or int(np.abs(df.to_numpy()).max()) == 0
+    EMPTY_RESULT = {
+        "rows": 0,
+        "columns": [],
+        "mean": {},
+        "std": {},
+        "variance": {},
+        "min": {},
+        "max": {},
+        "median": {},
+        "mode": {},
+        "range": {},
+        "allowed_values": {},
+        "value_range": {},
+        "correlation": [],
+    }
+
+    # Treat near-silent audio (very low peak amplitude, not just exact zero)
+    # as empty -- real silence often has a tiny noise floor, not exact 0.
+    peak = int(np.abs(df.to_numpy()).max()) if len(df) else 0
+    SILENCE_THRESHOLD = 50  # out of 32767 for int16 -- adjust if needed
+    is_silent = len(df) == 0 or peak <= SILENCE_THRESHOLD
     if is_silent:
-        return {
-            "rows": 0,
-            "columns": [],
-            "mean": {},
-            "std": {},
-            "variance": {},
-            "min": {},
-            "max": {},
-            "median": {},
-            "mode": {},
-            "range": {},
-            "allowed_values": {},
-            "value_range": {},
-            "correlation": [],
-        }
+        return EMPTY_RESULT
 
     try:
         column_name = transcribe_column_name(audio_bytes)
     except Exception:
         column_name = ""
 
+    # If we couldn't confidently transcribe a real column name, treat this
+    # clip the same as "no usable data" instead of guessing "channel_0".
     if not column_name:
-        column_name = "channel_0"
+        return EMPTY_RESULT
 
     if len(df.columns) == 1:
         df.columns = [column_name]

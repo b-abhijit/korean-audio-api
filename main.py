@@ -255,7 +255,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q6-q16-patched-v1",
+        "version": "2026-q6-q16-patched-v2",
     }
 
 

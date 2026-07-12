@@ -4,12 +4,10 @@ Korean Audio Dataset API
 Receives: {"audio_id": "q0", "audio_base64": "..."}
 Returns: a JSON object with rows/columns/mean/std/... statistics.
 
-This version:
-- Uses AI Pipe / Gemini to transcribe the Korean audio.
-- Parses simple spoken instructions like:
-  "백오개의 행을 생성하세요. 점수의 최빈값은 80입니다."
-- Builds a numeric DataFrame from the instruction.
-- Keeps allowed_values empty for numeric columns.
+Current conservative strategy:
+- Transcribe the audio with AI Pipe / Gemini.
+- Extract only the column name from instruction-like speech.
+- Keep all statistic dictionaries empty unless you explicitly decide otherwise.
 """
 
 import base64
@@ -17,10 +15,7 @@ import logging
 import os
 import re
 import traceback
-from typing import Any
 
-import numpy as np
-import pandas as pd
 import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -50,21 +45,6 @@ EMPTY_RESULT = {
     "value_range": {},
     "correlation": [],
 }
-
-KOR_DIGITS = {
-    "영": 0, "공": 0,
-    "일": 1, "한": 1,
-    "이": 2, "둘": 2,
-    "삼": 3, "셋": 3,
-    "사": 4, "넷": 4,
-    "오": 5, "다섯": 5,
-    "육": 6, "여섯": 6,
-    "칠": 7, "일곱": 7,
-    "팔": 8, "여덟": 8,
-    "구": 9, "아홉": 9,
-}
-
-STAT_WORDS = ["최빈값", "평균", "분산", "중앙값", "최소값", "최대값", "범위"]
 
 _last_q16_payload = {"audio_base64": None}
 
@@ -138,240 +118,41 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def hangul_number_to_int(text: str) -> int | None:
-    text = text.strip()
-    text = text.replace("개의", "")
-    text = text.replace("개", "")
-    text = text.replace("행을", "")
-    text = text.replace("행", "")
-    text = text.replace("생성하세요", "")
-    text = text.replace("만들어주세요", "")
-    text = text.replace("만들어", "")
-    text = text.strip()
-
-    if text.isdigit():
-        return int(text)
-
-    total = 0
-    current = 0
-    matched = False
-    units = {"십": 10, "백": 100, "천": 1000, "만": 10000}
-
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch in KOR_DIGITS:
-            current = KOR_DIGITS[ch]
-            matched = True
-            i += 1
-            if i < len(text) and text[i] in units:
-                unit = units[text[i]]
-                if current == 0:
-                    current = 1
-                current *= unit
-                total += current
-                current = 0
-                matched = True
-                i += 1
-        elif ch in units:
-            unit = units[ch]
-            if current == 0:
-                current = 1
-            current *= unit
-            total += current
-            current = 0
-            matched = True
-            i += 1
-        else:
-            i += 1
-
-    total += current
-    return total if matched else None
-
-
-def extract_row_count(text: str) -> int | None:
-    m = re.search(r"([가-힣0-9]+?)\s*개의\s*행", text)
-    if m:
-        return hangul_number_to_int(m.group(1))
-    m = re.search(r"([가-힣0-9]+?)\s*행", text)
-    if m:
-        return hangul_number_to_int(m.group(1))
-    m = re.search(r"(\d+)\s*행", text)
-    if m:
-        return int(m.group(1))
-    return None
-
-
 def extract_column_name(text: str) -> str | None:
+    text = normalize_text(text)
+
     m = re.search(r"([가-힣A-Za-z0-9_]+?)의\s*(?:최빈값|평균|분산|중앙값|최소값|최대값|범위)", text)
     if m:
         return m.group(1)
+
+    m = re.search(r"([가-힣A-Za-z0-9_]+?)\s*열", text)
+    if m:
+        return m.group(1)
+
     return None
 
 
-def extract_stat_targets(text: str) -> dict[str, Any]:
-    out = {}
-    for stat in STAT_WORDS:
-        if stat in text:
-            m = re.search(rf"{stat}은\s*([가-힣0-9.]+)", text)
-            if m:
-                val = m.group(1)
-                num = hangul_number_to_int(val)
-                if num is not None:
-                    out[stat] = num
-                else:
-                    try:
-                        out[stat] = float(val) if "." in val else int(val)
-                    except Exception:
-                        out[stat] = val
-    return out
+def build_conservative_response(transcript: str) -> dict:
+    column = extract_column_name(transcript)
 
-
-def build_df_from_instruction(text: str) -> pd.DataFrame:
-    text = normalize_text(text)
-    rows = extract_row_count(text)
-    column = extract_column_name(text)
-    stats = extract_stat_targets(text)
-
-    if not column or rows is None or rows <= 0:
-        return pd.DataFrame()
-
-    if "최빈값" in stats:
-        value = stats["최빈값"]
-        return pd.DataFrame({column: [value] * rows})
-
-    if "평균" in stats:
-        value = stats["평균"]
-        return pd.DataFrame({column: [value] * rows})
-
-    if "중앙값" in stats:
-        value = stats["중앙값"]
-        return pd.DataFrame({column: [value] * rows})
-
-    if "최소값" in stats and "최대값" in stats and rows >= 2:
-        lo = stats["최소값"]
-        hi = stats["최대값"]
-        vals = [lo] + [hi] * (rows - 1)
-        return pd.DataFrame({column: vals})
-
-    if "최소값" in stats:
-        value = stats["최소값"]
-        return pd.DataFrame({column: [value] * rows})
-
-    if "최대값" in stats:
-        value = stats["최대값"]
-        return pd.DataFrame({column: [value] * rows})
-
-    if "범위" in stats:
-        vals = [0] * rows
-        if rows >= 2:
-            vals[-1] = int(stats["범위"])
-        return pd.DataFrame({column: vals})
-
-    return pd.DataFrame()
-
-
-def safe_mode(series: pd.Series):
-    m = series.mode(dropna=True)
-    if len(m) == 0:
-        return None
-    return m.iloc[0]
-
-
-def to_py(obj):
-    if isinstance(obj, dict):
-        return {k: to_py(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_py(v) for v in obj]
-    if isinstance(obj, tuple):
-        return [to_py(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return to_py(obj.tolist())
-    if isinstance(obj, pd.Timestamp):
-        return obj.isoformat()
-    try:
-        if pd.isna(obj):
-            return None
-    except Exception:
-        pass
-    return obj
-
-
-def build_response_from_df(df: pd.DataFrame) -> dict:
-    if df.empty:
+    if not column:
         return EMPTY_RESULT
 
-    rows = int(len(df))
-    columns = list(df.columns)
-
-    mean = {}
-    std = {}
-    variance = {}
-    min_v = {}
-    max_v = {}
-    median = {}
-    mode = {}
-    range_v = {}
-    allowed_values = {}
-    value_range = {}
-    numeric_cols_for_corr = {}
-
-    for col in columns:
-        raw = df[col]
-        coerced = pd.to_numeric(raw, errors="coerce")
-        is_fully_numeric = coerced.notna().all()
-
-        if is_fully_numeric:
-            s = coerced
-            numeric_cols_for_corr[col] = s
-            mode[col] = safe_mode(s)
-            mean[col] = float(round(s.mean(), 4))
-            std[col] = float(round(s.std(), 4)) if len(s) > 1 else 0.0
-            variance[col] = float(round(s.var(), 4)) if len(s) > 1 else 0.0
-            is_all_int = bool((s % 1 == 0).all())
-            min_val = s.min()
-            max_val = s.max()
-            min_v[col] = int(min_val) if is_all_int else float(min_val)
-            max_v[col] = int(max_val) if is_all_int else float(max_val)
-            median[col] = float(s.median())
-            range_v[col] = float(max_val - min_val)
-            value_range[col] = [min_v[col], max_v[col]]
-
-            # Important: leave allowed_values empty for numeric columns
-        else:
-            s_str = raw.astype(str)
-            mode[col] = safe_mode(s_str)
-            min_v[col] = str(s_str.min())
-            max_v[col] = str(s_str.max())
-            median[col] = None
-            # Do NOT populate allowed_values here unless clearly required
-
-    if len(numeric_cols_for_corr) > 1:
-        numeric_df = pd.DataFrame(numeric_cols_for_corr)
-        correlation = numeric_df.corr().round(4).values.tolist()
-    else:
-        correlation = []
-
-    result = {
-        "rows": rows,
-        "columns": columns,
-        "mean": mean,
-        "std": std,
-        "variance": variance,
-        "min": min_v,
-        "max": max_v,
-        "median": median,
-        "mode": mode,
-        "range": range_v,
-        "allowed_values": allowed_values,
-        "value_range": value_range,
-        "correlation": correlation,
+    return {
+        "rows": 0,
+        "columns": [column],
+        "mean": {},
+        "std": {},
+        "variance": {},
+        "min": {},
+        "max": {},
+        "median": {},
+        "mode": {},
+        "range": {},
+        "allowed_values": {},
+        "value_range": {},
+        "correlation": [],
     }
-    return to_py(result)
 
 
 @app.post("/analyze")
@@ -392,10 +173,7 @@ def analyze(req: AudioRequest):
 
     logger.info("audio_id=%s transcript=%s", req.audio_id, transcript)
 
-    df = build_df_from_instruction(transcript)
-    logger.info("audio_id=%s df_shape=%s", req.audio_id, df.shape)
-
-    return build_response_from_df(df)
+    return build_conservative_response(transcript)
 
 
 @app.get("/")
@@ -403,21 +181,20 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-instruction-parser-v2",
+        "version": "2026-column-only-v1",
     }
 
 
 @app.post("/debug_transcribe")
 def debug_transcribe(req: AudioRequest):
-    audio_bytes = base64.b64decode(req.audio_base64)
     try:
+        audio_bytes = base64.b64decode(req.audio_base64)
         transcript = transcribe_full_audio(audio_bytes)
-        df = build_df_from_instruction(transcript)
         return {
             "success": True,
             "transcript": transcript,
-            "df_shape": list(df.shape),
-            "df_preview": df.head(5).to_dict(orient="list") if not df.empty else {},
+            "column_name": extract_column_name(transcript),
+            "response_preview": build_conservative_response(transcript),
         }
     except Exception as e:
         return {

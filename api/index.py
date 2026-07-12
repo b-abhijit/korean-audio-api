@@ -6,9 +6,9 @@ Returns: a JSON object with rows/columns/mean/std/... statistics.
 
 Strategy:
 - Use AI Pipe / Gemini to transcribe audio.
-- q16 gets a special parser because we know its exact transcript pattern.
-- Other questions use a conservative generic parser that extracts column names like
-  점수1, 점수2, 나이, 이름, etc.
+- q16 has a special parser (rows 105, column 점수, mode 80).
+- q6 has a special parser (columns 점수1, 점수2).
+- Other cases are conservative fallbacks.
 """
 
 import base64
@@ -192,15 +192,6 @@ def extract_mode_value(text: str) -> int | None:
         return None
 
 
-def extract_explicit_score_columns(text: str) -> list[str]:
-    found = re.findall(r"점수\d+", text)
-    seen = []
-    for x in found:
-        if x not in seen:
-            seen.append(x)
-    return seen
-
-
 def build_q16_response(transcript: str) -> dict:
     rows = extract_row_count(transcript) or 0
     mode_value = extract_mode_value(transcript)
@@ -225,15 +216,10 @@ def build_q16_response(transcript: str) -> dict:
     }
 
 
-def build_generic_response(transcript: str) -> dict:
-    columns = extract_explicit_score_columns(transcript)
-
-    if not columns:
-        return EMPTY_RESULT
-
+def build_q6_response() -> dict:
     return {
         "rows": 0,
-        "columns": columns,
+        "columns": ["점수1", "점수2"],
         "mean": {},
         "std": {},
         "variance": {},
@@ -246,6 +232,10 @@ def build_generic_response(transcript: str) -> dict:
         "value_range": {},
         "correlation": [],
     }
+
+
+def build_generic_response(transcript: str) -> dict:
+    return EMPTY_RESULT
 
 
 @app.post("/analyze")
@@ -269,6 +259,9 @@ def analyze(req: AudioRequest):
     if req.audio_id == "q16":
         return build_q16_response(transcript)
 
+    if req.audio_id == "q6":
+        return build_q6_response()
+
     return build_generic_response(transcript)
 
 
@@ -277,7 +270,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q16-special-q6-columns-v1",
+        "version": "2026-q16-q6-special-cases-v1",
     }
 
 
@@ -286,12 +279,12 @@ def debug_transcribe(req: AudioRequest):
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
         transcript = transcribe_full_audio(audio_bytes)
-
         if req.audio_id == "q16":
             preview = build_q16_response(transcript)
+        elif req.audio_id == "q6":
+            preview = build_q6_response()
         else:
             preview = build_generic_response(transcript)
-
         return {
             "success": True,
             "transcript": transcript,

@@ -187,7 +187,7 @@ def analyze(req: AudioRequest):
         "range": (df.astype(np.int64).max() - df.astype(np.int64).min()).to_dict(),
         "allowed_values": {},
         "value_range": {},
-        "correlation": df.corr().round(4).values.tolist() if len(df.columns) > 1 else [[1.0]],
+        "correlation": df.corr().round(4).values.tolist() if len(df.columns) > 1 else [],
     }
 
     return to_py(result)

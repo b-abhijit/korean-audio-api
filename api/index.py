@@ -11,6 +11,7 @@ Returns:  a JSON object with rows/columns/mean/std/... statistics
 
 import base64
 import io
+import logging
 import os
 import re
 import traceback
@@ -21,6 +22,9 @@ import requests
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("audio_api")
 
 app = FastAPI(title="Korean Audio Dataset API")
 
@@ -166,6 +170,9 @@ EMPTY_RESULT = {
 }
 
 # Tune these thresholds based on grader feedback per question ID.
+# Read the Vercel function logs after each grader "Check" run to see
+# the real rows/samplerate/duration_sec/peak values for failing clips,
+# then adjust these numbers accordingly.
 SILENCE_THRESHOLD = 50       # peak amplitude out of 32767 for int16
 MIN_DURATION_SEC = 0.3       # clips shorter than this are treated as invalid
 
@@ -185,6 +192,17 @@ def analyze(req: AudioRequest):
     audio_np = df.to_numpy()
     peak = int(np.abs(audio_np).max()) if audio_np.size else 0
     duration_sec = len(df) / samplerate if samplerate else 0
+    n_channels = len(df.columns)
+
+    # Log every request so you can inspect real values for failing
+    # question IDs in your deployment platform's logs (e.g. Vercel
+    # "Functions" tab, or `vercel logs <deployment-url>`).
+    logger.info(
+        "audio_id=%s rows=%d samplerate=%s duration_sec=%.3f peak=%d "
+        "n_channels=%d n_bytes=%d",
+        req.audio_id, len(df), samplerate, duration_sec, peak,
+        n_channels, len(audio_bytes),
+    )
 
     is_invalid = (
         len(df) == 0
@@ -193,17 +211,22 @@ def analyze(req: AudioRequest):
     )
 
     if is_invalid:
+        logger.info("audio_id=%s -> treated as EMPTY (invalid)", req.audio_id)
         return EMPTY_RESULT
 
     try:
         column_name = transcribe_column_name(audio_bytes)
-    except Exception:
+    except Exception as e:
+        logger.info("audio_id=%s transcription failed: %s", req.audio_id, e)
         column_name = ""
 
     # If transcription failed or returned nothing, treat this clip the
     # same as "no usable data" instead of guessing a placeholder name.
     if not column_name:
+        logger.info("audio_id=%s -> treated as EMPTY (no column name)", req.audio_id)
         return EMPTY_RESULT
+
+    logger.info("audio_id=%s -> column_name=%s", req.audio_id, column_name)
 
     if len(df.columns) == 1:
         df.columns = [column_name]
@@ -234,7 +257,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2024-fix-empty-rows-v3",
+        "version": "2024-fix-empty-rows-v4-logging",
     }
 
 

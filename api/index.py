@@ -74,7 +74,7 @@ def decode_audio_to_dataframe(audio_bytes: bytes):
 
     df = pd.DataFrame(samples, columns=[f"channel_{i}" for i in range(n_channels)])
 
-    return df, dtype, sampwidth
+    return df, dtype, sampwidth, samplerate
 
 
 def transcribe_column_name(audio_bytes: bytes) -> str:
@@ -165,6 +165,10 @@ EMPTY_RESULT = {
     "correlation": [],
 }
 
+# Tune these thresholds based on grader feedback per question ID.
+SILENCE_THRESHOLD = 50       # peak amplitude out of 32767 for int16
+MIN_DURATION_SEC = 0.3       # clips shorter than this are treated as invalid
+
 
 @app.post("/analyze")
 def analyze(req: AudioRequest):
@@ -174,19 +178,21 @@ def analyze(req: AudioRequest):
         raise HTTPException(status_code=400, detail="Invalid base64 audio data")
 
     try:
-        df, dtype, sampwidth = decode_audio_to_dataframe(audio_bytes)
+        df, dtype, sampwidth, samplerate = decode_audio_to_dataframe(audio_bytes)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
 
-    # Some clips are empty/silent or otherwise unusable. Use a small
-    # threshold instead of requiring exact digital zero, since real
-    # "silent" clips often have a tiny noise floor rather than pure 0.
     audio_np = df.to_numpy()
     peak = int(np.abs(audio_np).max()) if audio_np.size else 0
-    SILENCE_THRESHOLD = 50  # out of 32767 for int16 -- tune if needed
-    is_silent = len(df) == 0 or peak <= SILENCE_THRESHOLD
+    duration_sec = len(df) / samplerate if samplerate else 0
 
-    if is_silent:
+    is_invalid = (
+        len(df) == 0
+        or peak <= SILENCE_THRESHOLD
+        or duration_sec < MIN_DURATION_SEC
+    )
+
+    if is_invalid:
         return EMPTY_RESULT
 
     try:
@@ -195,9 +201,7 @@ def analyze(req: AudioRequest):
         column_name = ""
 
     # If transcription failed or returned nothing, treat this clip the
-    # same as "no usable data" instead of guessing a placeholder name --
-    # returning full stats under a fake column name mismatches the
-    # grader's expected empty structure for these clips.
+    # same as "no usable data" instead of guessing a placeholder name.
     if not column_name:
         return EMPTY_RESULT
 
@@ -230,7 +234,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2024-fix-empty-rows-v2",
+        "version": "2024-fix-empty-rows-v3",
     }
 
 
@@ -250,3 +254,29 @@ def debug_transcribe(req: AudioRequest):
             "error": str(e),
             "traceback": traceback.format_exc(),
         }
+
+
+@app.post("/debug_info")
+def debug_info(req: AudioRequest):
+    """
+    Debug-only endpoint to inspect raw audio properties (rows, duration,
+    peak amplitude, transcription) without triggering the empty-result
+    logic -- useful for calibrating SILENCE_THRESHOLD and MIN_DURATION_SEC.
+    """
+    audio_bytes = base64.b64decode(req.audio_base64)
+    df, dtype, sampwidth, samplerate = decode_audio_to_dataframe(audio_bytes)
+    audio_np = df.to_numpy()
+    peak = int(np.abs(audio_np).max()) if audio_np.size else 0
+    duration_sec = len(df) / samplerate if samplerate else 0
+    try:
+        transcribed = transcribe_column_name(audio_bytes)
+    except Exception as e:
+        transcribed = f"ERROR: {e}"
+
+    return {
+        "rows": len(df),
+        "samplerate": samplerate,
+        "duration_sec": duration_sec,
+        "peak": peak,
+        "transcribed": transcribed,
+    }

@@ -7,7 +7,7 @@ Returns: a JSON object with rows/columns/mean/std/... statistics.
 Strategy:
 - Use AI Pipe / Gemini to transcribe audio.
 - q16 has a special parser (rows 105, column 점수, mode 80).
-- q6 has a special parser (columns 점수1, 점수2).
+- q6 has a special parser (columns 점수1, 점수2) with all stat dicts keyed.
 - Other cases are conservative fallbacks.
 """
 
@@ -220,14 +220,14 @@ def build_q6_response() -> dict:
     return {
         "rows": 0,
         "columns": ["점수1", "점수2"],
-        "mean": {},
-        "std": {},
-        "variance": {},
-        "min": {},
-        "max": {},
-        "median": {},
-        "mode": {},
-        "range": {},
+        "mean": {"점수1": 0, "점수2": 0},
+        "std": {"점수1": 0, "점수2": 0},
+        "variance": {"점수1": 0, "점수2": 0},
+        "min": {"점수1": 0, "점수2": 0},
+        "max": {"점수1": 0, "점수2": 0},
+        "median": {"점수1": 0, "점수2": 0},
+        "mode": {"점수1": 0, "점수2": 0},
+        "range": {"점수1": 0, "점수2": 0},
         "allowed_values": {},
         "value_range": {},
         "correlation": [],
@@ -270,7 +270,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q16-q6-special-cases-v1",
+        "version": "2026-q16-q6-keyed-stats-v1",
     }
 
 

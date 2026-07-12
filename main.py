@@ -161,11 +161,14 @@ def analyze(req: AudioRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
 
-    # Some clips are empty/silent and decode to zero samples. There's no
-    # real data to name or summarize in that case, so return the fully
-    # empty structure instead of forcing stats out of an empty DataFrame
-    # (which would produce NaN-keyed dicts like {"점수": NaN} instead of {}).
-    if len(df) == 0:
+    # Some clips are empty/silent. "Empty" here means either zero frames
+    # (a truncated/corrupt file) OR real duration but total digital
+    # silence (every sample is 0) -- both cases have no real data to
+    # name or summarize, so return the fully empty structure instead of
+    # forcing stats out of it (which would produce NaN-keyed dicts like
+    # {"점수": NaN} instead of {}).
+    is_silent = len(df) == 0 or int(np.abs(df.to_numpy()).max()) == 0
+    if is_silent:
         return {
             "rows": 0,
             "columns": [],

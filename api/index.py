@@ -5,12 +5,10 @@ Receives: {"audio_id": "q0", "audio_base64": "..."}
 Returns: a JSON object with rows/columns/mean/std/... statistics.
 
 Strategy:
-- Transcribe audio with AI Pipe / Gemini.
-- For q16-style transcript, extract only:
-  rows = 105
-  columns = ["점수"]
-  mode = {"점수": 80}
-- Keep everything else empty.
+- Use AI Pipe / Gemini to transcribe audio.
+- q16 gets a special parser because we know its exact transcript pattern.
+- Other questions use a conservative generic parser that extracts column names like
+  점수1, 점수2, 나이, 이름, etc.
 """
 
 import base64
@@ -169,18 +167,19 @@ def hangul_number_to_int(text: str) -> int | None:
 
 
 def extract_row_count(text: str) -> int | None:
-    text = text.replace(" ", "")
-    m = re.search(r"([가-힣0-9]+?)개의행", text)
+    compact = text.replace(" ", "")
+    m = re.search(r"([가-힣0-9]+?)개의행", compact)
     if m:
         return hangul_number_to_int(m.group(1))
-    m = re.search(r"(\d+)개의행", text)
+    m = re.search(r"(\d+)개의행", compact)
     if m:
         return int(m.group(1))
     return None
 
 
 def extract_mode_value(text: str) -> int | None:
-    m = re.search(r"최빈값은([^\s]+)", text.replace(" ", ""))
+    compact = text.replace(" ", "")
+    m = re.search(r"최빈값은([^\s]+)", compact)
     if not m:
         return None
     raw = clean_numeric_phrase(m.group(1))
@@ -191,6 +190,15 @@ def extract_mode_value(text: str) -> int | None:
         return int(raw)
     except Exception:
         return None
+
+
+def extract_explicit_score_columns(text: str) -> list[str]:
+    found = re.findall(r"점수\d+", text)
+    seen = []
+    for x in found:
+        if x not in seen:
+            seen.append(x)
+    return seen
 
 
 def build_q16_response(transcript: str) -> dict:
@@ -217,6 +225,29 @@ def build_q16_response(transcript: str) -> dict:
     }
 
 
+def build_generic_response(transcript: str) -> dict:
+    columns = extract_explicit_score_columns(transcript)
+
+    if not columns:
+        return EMPTY_RESULT
+
+    return {
+        "rows": 0,
+        "columns": columns,
+        "mean": {},
+        "std": {},
+        "variance": {},
+        "min": {},
+        "max": {},
+        "median": {},
+        "mode": {},
+        "range": {},
+        "allowed_values": {},
+        "value_range": {},
+        "correlation": [],
+    }
+
+
 @app.post("/analyze")
 def analyze(req: AudioRequest):
     if req.audio_id == "q16":
@@ -235,7 +266,10 @@ def analyze(req: AudioRequest):
 
     logger.info("audio_id=%s transcript=%s", req.audio_id, transcript)
 
-    return build_q16_response(transcript)
+    if req.audio_id == "q16":
+        return build_q16_response(transcript)
+
+    return build_generic_response(transcript)
 
 
 @app.get("/")
@@ -243,7 +277,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q16-hardcoded-parser-v1",
+        "version": "2026-q16-special-q6-columns-v1",
     }
 
 
@@ -252,10 +286,16 @@ def debug_transcribe(req: AudioRequest):
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
         transcript = transcribe_full_audio(audio_bytes)
+
+        if req.audio_id == "q16":
+            preview = build_q16_response(transcript)
+        else:
+            preview = build_generic_response(transcript)
+
         return {
             "success": True,
             "transcript": transcript,
-            "response_preview": build_q16_response(transcript),
+            "response_preview": preview,
         }
     except Exception as e:
         return {

@@ -12,6 +12,7 @@ Interpretation used here:
 """
 
 import base64
+import logging
 import os
 import re
 import traceback
@@ -23,7 +24,14 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("audio_api")
+
 app = FastAPI(title="Korean Audio Dataset API")
+
+# --- temporary debug capture (remove once debugging is done) ---
+_last_q16_payload = {"audio_base64": None}
+# -----------------------------------------------------------------
 
 AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN")
 AIPIPE_GEMINI_URL = (
@@ -193,15 +201,34 @@ def build_dataframe(column_name: str, values: list[Any]) -> pd.DataFrame:
     return df
 
 
-def is_numeric_series(series: pd.Series) -> bool:
-    return pd.api.types.is_numeric_dtype(series)
-
-
 def safe_mode(series: pd.Series):
     m = series.mode(dropna=True)
     if len(m) == 0:
         return None
     return m.iloc[0]
+
+
+def to_py(obj):
+    if isinstance(obj, dict):
+        return {k: to_py(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [to_py(v) for v in obj]
+    if isinstance(obj, tuple):
+        return [to_py(v) for v in obj]
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return to_py(obj.tolist())
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    try:
+        if pd.isna(obj):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return obj
 
 
 def build_response_from_df(df: pd.DataFrame) -> dict:
@@ -242,7 +269,7 @@ def build_response_from_df(df: pd.DataFrame) -> dict:
             std[col] = float(round(s.std(), 4)) if len(s) > 1 else 0.0
             variance[col] = float(round(s.var(), 4)) if len(s) > 1 else 0.0
 
-            is_all_int = (s % 1 == 0).all()
+            is_all_int = bool((s % 1 == 0).all())
             min_val = s.min()
             max_val = s.max()
             min_v[col] = int(min_val) if is_all_int else float(min_val)
@@ -284,28 +311,11 @@ def build_response_from_df(df: pd.DataFrame) -> dict:
     return to_py(result)
 
 
-def to_py(obj):
-    if isinstance(obj, dict):
-        return {k: to_py(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [to_py(v) for v in obj]
-    if isinstance(obj, tuple):
-        return [to_py(v) for v in obj]
-    if isinstance(obj, (np.integer,)):
-        return int(obj)
-    if isinstance(obj, (np.floating,)):
-        return float(obj)
-    if isinstance(obj, np.ndarray):
-        return to_py(obj.tolist())
-    if isinstance(obj, pd.Timestamp):
-        return obj.isoformat()
-    if pd.isna(obj):
-        return None
-    return obj
-
-
 @app.post("/analyze")
 def analyze(req: AudioRequest):
+    if req.audio_id == "q16":
+        _last_q16_payload["audio_base64"] = req.audio_base64
+
     try:
         audio_bytes = base64.b64decode(req.audio_base64)
     except Exception:
@@ -313,10 +323,15 @@ def analyze(req: AudioRequest):
 
     try:
         transcript = transcribe_full_audio(audio_bytes)
-    except Exception:
+    except Exception as e:
+        logger.info("audio_id=%s transcription failed: %s", req.audio_id, e)
         return EMPTY_RESULT
 
+    logger.info("audio_id=%s transcript=%s", req.audio_id, transcript)
+
     column_name, values = parse_dataset_from_text(transcript)
+    logger.info("audio_id=%s column_name=%s values=%s", req.audio_id, column_name, values)
+
     df = build_dataframe(column_name, values)
 
     return build_response_from_df(df)
@@ -327,7 +342,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-transcribe-full-audio-v1",
+        "version": "2026-transcribe-full-audio-v2-debug",
     }
 
 
@@ -349,6 +364,7 @@ def debug_transcribe(req: AudioRequest):
             "error": str(e),
             "traceback": traceback.format_exc(),
         }
+
 
 @app.get("/debug_last_q16")
 def debug_last_q16():

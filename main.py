@@ -29,13 +29,35 @@ app = FastAPI(title="Korean Audio Dataset API")
 # tab). NEVER hardcode it here or commit it to git.
 AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN")
 AIPIPE_GEMINI_URL = (
-    "https://aipipe.org/geminiv1beta/models/gemini-2.5-flash-lite:generateContent"
+    "https://aipipe.org/geminiv1beta/models/gemini-2.5-flash:generateContent"
 )
 
 
 class AudioRequest(BaseModel):
     audio_id: str
     audio_base64: str
+
+
+def detect_audio_mime_type(audio_bytes: bytes) -> str:
+    """
+    Sniff the first few bytes of the file to figure out its real format.
+    Gemini needs the correct mime_type to decode the audio properly --
+    labeling an MP3 as "audio/wav" (or vice versa) can cause garbled or
+    hallucinated transcriptions.
+    """
+    header = audio_bytes[:12]
+    if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
+        return "audio/wav"
+    if header[:4] == b"OggS":
+        return "audio/ogg"
+    if header[:4] == b"fLaC":
+        return "audio/flac"
+    if header[:3] == b"ID3" or header[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        return "audio/mpeg"
+    if header[4:8] == b"ftyp":
+        return "audio/mp4"
+    # Fall back to WAV, the most common case for this assignment.
+    return "audio/wav"
 
 
 def decode_audio_to_dataframe(audio_bytes: bytes):
@@ -66,6 +88,7 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
         raise RuntimeError("AIPIPE_TOKEN environment variable is not set")
 
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    mime_type = detect_audio_mime_type(audio_bytes)
     headers = {
         "Authorization": f"Bearer {AIPIPE_TOKEN}",
         "Content-Type": "application/json",
@@ -75,18 +98,23 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
             {
                 "role": "user",
                 "parts": [
-                    {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
+                    {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
                     {
                         "text": (
-                            "Transcribe the single spoken Korean word or short "
-                            "phrase in this audio clip. Reply with ONLY the "
-                            "Korean text, nothing else -- no punctuation, no "
-                            "explanation, no romanization."
+                            "This audio clip contains one short spoken Korean "
+                            "word that names a column in a dataset (e.g. 점수 "
+                            "'score', 나이 'age', 이름 'name', 성별 'gender', "
+                            "주소 'address'). Listen carefully and transcribe "
+                            "EXACTLY the word spoken -- do not guess or "
+                            "substitute a similar-sounding word. Reply with "
+                            "ONLY the Korean text, nothing else: no "
+                            "punctuation, no romanization, no explanation."
                         )
                     },
                 ],
             }
-        ]
+        ],
+        "generationConfig": {"temperature": 0},
     }
 
     resp = requests.post(AIPIPE_GEMINI_URL, headers=headers, json=payload, timeout=30)

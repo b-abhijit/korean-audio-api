@@ -349,3 +349,12 @@ def debug_transcribe(req: AudioRequest):
             "error": str(e),
             "traceback": traceback.format_exc(),
         }
+
+@app.get("/debug_last_q16")
+def debug_last_q16():
+    if not _last_q16_payload["audio_base64"]:
+        return {"error": "no q16 payload captured yet"}
+    return {
+        "audio_id": "q16",
+        "audio_base64": _last_q16_payload["audio_base64"],
+    }

@@ -6,7 +6,7 @@ Returns: a JSON object with rows/columns/mean/std/... statistics.
 
 Conservative strategy:
 - Transcribe the audio with AI Pipe / Gemini.
-- Parse row count, column name, and explicitly spoken stats.
+- Parse row count, column name(s), and explicitly spoken stats.
 - Do not invent any other fields.
 """
 
@@ -128,8 +128,7 @@ def transcribe_full_audio(audio_bytes: bytes) -> str:
 
 
 def normalize_text(text: str) -> str:
-    text = text.strip().replace("\n", " ")
-    return re.sub(r"\s+", " ", text)
+    return re.sub(r"\s+", " ", text.strip().replace("\n", " "))
 
 
 def clean_numeric_phrase(text: str) -> str:
@@ -137,13 +136,11 @@ def clean_numeric_phrase(text: str) -> str:
     text = text.replace(",", "")
     text = re.sub(r"[.!?]+$", "", text)
     text = re.sub(r"(입니다|이에요|예요|입니다요|이다)$", "", text)
-    text = text.strip()
-    return text
+    return text.strip()
 
 
 def hangul_number_to_int(text: str) -> int | None:
     text = clean_numeric_phrase(text)
-
     if text.isdigit():
         return int(text)
 
@@ -183,6 +180,46 @@ def hangul_number_to_int(text: str) -> int | None:
     return total if matched else None
 
 
+def is_valid_column_token(token: str) -> bool:
+    token = token.strip()
+    if not token:
+        return False
+    if re.fullmatch(r"\d+", token):
+        return False
+    return bool(re.search(r"[가-힣A-Za-z]", token))
+
+
+def extract_columns(text: str) -> list[str]:
+    text = normalize_text(text)
+
+    cols = []
+
+    for m in re.finditer(r"([가-힣A-Za-z][가-힣A-Za-z0-9_]*)", text):
+        token = m.group(1)
+        if is_valid_column_token(token):
+            cols.append(token)
+
+    # Prefer explicit forms like "점수1과 점수2"
+    joined = []
+    for part in re.split(r"[,\s]+", text):
+        part = part.strip(".,!?")
+        if is_valid_column_token(part):
+            joined.append(part)
+
+    for c in joined:
+        if c not in cols:
+            cols.append(c)
+
+    # Common cleanup for phrases like "점수의"
+    cleaned = []
+    for c in cols:
+        c = re.sub(r"(의|은|는)$", "", c)
+        if is_valid_column_token(c) and c not in cleaned:
+            cleaned.append(c)
+
+    return cleaned
+
+
 def extract_row_count(text: str) -> int | None:
     text = normalize_text(text)
     m = re.search(r"([가-힣0-9]+?)\s*개의\s*행", text)
@@ -194,17 +231,6 @@ def extract_row_count(text: str) -> int | None:
     m = re.search(r"(\d+)\s*행", text)
     if m:
         return int(m.group(1))
-    return None
-
-
-def extract_column_name(text: str) -> str | None:
-    text = normalize_text(text)
-    m = re.search(r"([가-힣A-Za-z0-9_]+?)의\s*(?:최빈값|평균|분산|중앙값|최소값|최대값|범위|표준편차)", text)
-    if m:
-        return m.group(1)
-    m = re.search(r"([가-힣A-Za-z0-9_]+?)\s*열", text)
-    if m:
-        return m.group(1)
     return None
 
 
@@ -227,15 +253,15 @@ def extract_stat_value(text: str, korean_stat_name: str) -> Any | None:
 
 def build_response_from_transcript(transcript: str) -> dict:
     text = normalize_text(transcript)
-    column = extract_column_name(text)
+    columns = extract_columns(text)
     rows = extract_row_count(text)
 
-    if not column:
+    if not columns:
         return EMPTY_RESULT
 
     response = {
         "rows": rows if rows is not None else 0,
-        "columns": [column],
+        "columns": columns,
         "mean": {},
         "std": {},
         "variance": {},
@@ -249,9 +275,10 @@ def build_response_from_transcript(transcript: str) -> dict:
         "correlation": [],
     }
 
-    mode_value = extract_stat_value(text, "최빈값")
-    if mode_value is not None:
-        response["mode"] = {column: mode_value}
+    for col in columns:
+        mode_value = extract_stat_value(text, "최빈값")
+        if mode_value is not None and len(columns) == 1:
+            response["mode"] = {col: mode_value}
 
     return response
 
@@ -281,7 +308,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q16-row-parser-v1",
+        "version": "2026-q6-column-parser-v1",
     }
 
 

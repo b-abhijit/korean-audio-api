@@ -3,44 +3,32 @@ Korean Audio Dataset API
 -------------------------
 Receives: {"audio_id": "q0", "audio_base64": "..."}
 Returns:  a JSON object with rows/columns/mean/std/... statistics
-          computed from the decoded audio waveform.
+          computed from the decoded audio waveform. The column name is
+          derived by transcribing a short spoken Korean word/phrase in
+          the clip (e.g. "점수" = "score") via AI Pipe's hosted
+          transcription endpoint -- no local speech model is bundled.
 """
 
 import base64
 import io
 import os
 import re
-import tempfile
 import traceback
 
 import numpy as np
 import pandas as pd
+import requests
 import soundfile as sf
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-# On serverless platforms (Vercel) most of the filesystem is read-only --
-# only /tmp is writable. huggingface_hub defaults to caching in the home
-# directory, which fails silently there. Force the cache into /tmp instead,
-# BEFORE importing faster_whisper (which reads this env var at import time).
-os.environ.setdefault("HF_HOME", "/tmp/hf_cache")
-os.environ.setdefault("HUGGINGFACE_HUB_CACHE", "/tmp/hf_cache")
-
-from faster_whisper import WhisperModel  # noqa: E402  (must follow env var setup)
-
 app = FastAPI(title="Korean Audio Dataset API")
 
-# Load once and reuse across requests (avoids reloading the model every call).
-_whisper_model = None
-_last_transcription_error = None  # for the /debug_transcribe endpoint only
-
-
-def get_whisper_model():
-    global _whisper_model
-    if _whisper_model is None:
-        # "base" balances accuracy vs size/speed; int8 keeps memory/CPU low.
-        _whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-    return _whisper_model
+# Set this in your deployment platform's Environment Variables settings
+# (Vercel: Project Settings -> Environment Variables; Render: Environment
+# tab). NEVER hardcode it here or commit it to git.
+AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN")
+AIPIPE_TRANSCRIBE_URL = "https://aipipe.org/openai/v1/audio/transcriptions"
 
 
 class AudioRequest(BaseModel):
@@ -68,15 +56,21 @@ def decode_audio_to_dataframe(audio_bytes: bytes):
 def transcribe_column_name(audio_bytes: bytes) -> str:
     """
     The audio clip contains a short spoken Korean word/phrase that names
-    the data column (e.g. "점수" = "score"). Transcribe it with Whisper
-    and clean up the text to use as a column name.
+    the data column (e.g. "점수" = "score"). Transcribe it via AI Pipe's
+    hosted OpenAI-compatible transcription endpoint (no local model).
     """
-    with tempfile.NamedTemporaryFile(suffix=".audio") as tmp:
-        tmp.write(audio_bytes)
-        tmp.flush()
-        model = get_whisper_model()
-        segments, _info = model.transcribe(tmp.name, language="ko", beam_size=1)
-        text = "".join(seg.text for seg in segments)
+    if not AIPIPE_TOKEN:
+        raise RuntimeError("AIPIPE_TOKEN environment variable is not set")
+
+    files = {"file": ("audio.wav", audio_bytes, "application/octet-stream")}
+    data = {"model": "whisper-1", "language": "ko"}
+    headers = {"Authorization": f"Bearer {AIPIPE_TOKEN}"}
+
+    resp = requests.post(
+        AIPIPE_TRANSCRIBE_URL, headers=headers, files=files, data=data, timeout=30
+    )
+    resp.raise_for_status()
+    text = resp.json().get("text", "")
 
     # Strip whitespace and common punctuation so "점수." or " 점수 " -> "점수"
     cleaned = re.sub(r"[\s.,!?~·]", "", text)
@@ -112,9 +106,7 @@ def analyze(req: AudioRequest):
 
     try:
         column_name = transcribe_column_name(audio_bytes)
-    except Exception as e:
-        global _last_transcription_error
-        _last_transcription_error = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+    except Exception:
         column_name = ""
 
     if not column_name:
@@ -153,7 +145,7 @@ def health_check():
 def debug_transcribe(req: AudioRequest):
     """
     Debug-only endpoint (not used by the grader) to see exactly what
-    Whisper transcribes and, if it fails, the full error traceback.
+    gets transcribed, or the full error if the AI Pipe call fails.
     """
     audio_bytes = base64.b64decode(req.audio_base64)
     try:

@@ -216,7 +216,11 @@ def analyze(req: AudioRequest):
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "message": "Korean Audio Dataset API is running"}
+    return {
+        "status": "ok",
+        "message": "Korean Audio Dataset API is running",
+        "version": "2024-fix-empty-rows-v1",
+    }
 
 
 @app.post("/debug_transcribe")

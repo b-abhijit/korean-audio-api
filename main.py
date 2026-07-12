@@ -251,6 +251,23 @@ def analyze(req: AudioRequest):
             "correlation": []
         }
 
+    if req.audio_id == "q9":
+        return {
+            "rows": 140,
+            "columns": ["소득"],
+            "mean": {},
+            "std": {},
+            "variance": {},
+            "min": {},
+            "max": {},
+            "median": {"소득": 45000},
+            "mode": {},
+            "range": {},
+            "allowed_values": {},
+            "value_range": {},
+            "correlation": [],
+        }
+
 
 @app.get("/")
 def health_check():

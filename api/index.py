@@ -161,6 +161,27 @@ def analyze(req: AudioRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Could not parse audio: {e}")
 
+    # Some clips are empty/silent and decode to zero samples. There's no
+    # real data to name or summarize in that case, so return the fully
+    # empty structure instead of forcing stats out of an empty DataFrame
+    # (which would produce NaN-keyed dicts like {"점수": NaN} instead of {}).
+    if len(df) == 0:
+        return {
+            "rows": 0,
+            "columns": [],
+            "mean": {},
+            "std": {},
+            "variance": {},
+            "min": {},
+            "max": {},
+            "median": {},
+            "mode": {},
+            "range": {},
+            "allowed_values": {},
+            "value_range": {},
+            "correlation": [],
+        }
+
     try:
         column_name = transcribe_column_name(audio_bytes)
     except Exception:

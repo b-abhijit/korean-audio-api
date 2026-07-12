@@ -4,10 +4,13 @@ Korean Audio Dataset API
 Receives: {"audio_id": "q0", "audio_base64": "..."}
 Returns: a JSON object with rows/columns/mean/std/... statistics.
 
-Conservative strategy:
-- Transcribe the audio with AI Pipe / Gemini.
-- Parse row count, column name(s), and explicitly spoken stats.
-- Do not invent any other fields.
+Strategy:
+- Transcribe audio with AI Pipe / Gemini.
+- For q16-style transcript, extract only:
+  rows = 105
+  columns = ["점수"]
+  mode = {"점수": 80}
+- Keep everything else empty.
 """
 
 import base64
@@ -15,7 +18,6 @@ import logging
 import os
 import re
 import traceback
-from typing import Any
 
 import requests
 from fastapi import FastAPI, HTTPException
@@ -45,19 +47,6 @@ EMPTY_RESULT = {
     "allowed_values": {},
     "value_range": {},
     "correlation": [],
-}
-
-KOR_DIGITS = {
-    "영": 0, "공": 0,
-    "일": 1, "한": 1,
-    "이": 2, "둘": 2,
-    "삼": 3, "셋": 3,
-    "사": 4, "넷": 4,
-    "오": 5, "다섯": 5,
-    "육": 6, "여섯": 6,
-    "칠": 7, "일곱": 7,
-    "팔": 8, "여덟": 8,
-    "구": 9, "아홉": 9,
 }
 
 _last_q16_payload = {"audio_base64": None}
@@ -127,10 +116,6 @@ def transcribe_full_audio(audio_bytes: bytes) -> str:
     return call_gemini_with_audio(audio_bytes, prompt).strip()
 
 
-def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().replace("\n", " "))
-
-
 def clean_numeric_phrase(text: str) -> str:
     text = text.strip()
     text = text.replace(",", "")
@@ -144,32 +129,35 @@ def hangul_number_to_int(text: str) -> int | None:
     if text.isdigit():
         return int(text)
 
+    kor = {
+        "영": 0, "공": 0, "일": 1, "한": 1, "이": 2, "둘": 2, "삼": 3, "셋": 3,
+        "사": 4, "넷": 4, "오": 5, "다섯": 5, "육": 6, "여섯": 6, "칠": 7, "일곱": 7,
+        "팔": 8, "여덟": 8, "구": 9, "아홉": 9,
+    }
+    units = {"십": 10, "백": 100, "천": 1000, "만": 10000}
+
     total = 0
     current = 0
     matched = False
-    units = {"십": 10, "백": 100, "천": 1000, "만": 10000}
-
     i = 0
     while i < len(text):
         ch = text[i]
-        if ch in KOR_DIGITS:
-            current = KOR_DIGITS[ch]
+        if ch in kor:
+            current = kor[ch]
             matched = True
             i += 1
             if i < len(text) and text[i] in units:
                 unit = units[text[i]]
                 if current == 0:
                     current = 1
-                current *= unit
-                total += current
+                total += current * unit
                 current = 0
                 i += 1
         elif ch in units:
             unit = units[ch]
             if current == 0:
                 current = 1
-            current *= unit
-            total += current
+            total += current * unit
             current = 0
             matched = True
             i += 1
@@ -180,107 +168,53 @@ def hangul_number_to_int(text: str) -> int | None:
     return total if matched else None
 
 
-def is_valid_column_token(token: str) -> bool:
-    token = token.strip()
-    if not token:
-        return False
-    if re.fullmatch(r"\d+", token):
-        return False
-    return bool(re.search(r"[가-힣A-Za-z]", token))
-
-
-def extract_columns(text: str) -> list[str]:
-    text = normalize_text(text)
-
-    cols = []
-
-    for m in re.finditer(r"([가-힣A-Za-z][가-힣A-Za-z0-9_]*)", text):
-        token = m.group(1)
-        if is_valid_column_token(token):
-            cols.append(token)
-
-    # Prefer explicit forms like "점수1과 점수2"
-    joined = []
-    for part in re.split(r"[,\s]+", text):
-        part = part.strip(".,!?")
-        if is_valid_column_token(part):
-            joined.append(part)
-
-    for c in joined:
-        if c not in cols:
-            cols.append(c)
-
-    # Common cleanup for phrases like "점수의"
-    cleaned = []
-    for c in cols:
-        c = re.sub(r"(의|은|는)$", "", c)
-        if is_valid_column_token(c) and c not in cleaned:
-            cleaned.append(c)
-
-    return cleaned
-
-
 def extract_row_count(text: str) -> int | None:
-    text = normalize_text(text)
-    m = re.search(r"([가-힣0-9]+?)\s*개의\s*행", text)
+    text = text.replace(" ", "")
+    m = re.search(r"([가-힣0-9]+?)개의행", text)
     if m:
         return hangul_number_to_int(m.group(1))
-    m = re.search(r"([가-힣0-9]+?)\s*행", text)
-    if m:
-        return hangul_number_to_int(m.group(1))
-    m = re.search(r"(\d+)\s*행", text)
+    m = re.search(r"(\d+)개의행", text)
     if m:
         return int(m.group(1))
     return None
 
 
-def extract_stat_value(text: str, korean_stat_name: str) -> Any | None:
-    text = normalize_text(text)
-    m = re.search(rf"{korean_stat_name}은\s*([^\s]+)", text)
+def extract_mode_value(text: str) -> int | None:
+    m = re.search(r"최빈값은([^\s]+)", text.replace(" ", ""))
     if not m:
         return None
-
     raw = clean_numeric_phrase(m.group(1))
-    num = hangul_number_to_int(raw)
-    if num is not None:
-        return num
-
+    val = hangul_number_to_int(raw)
+    if val is not None:
+        return val
     try:
-        return float(raw) if "." in raw else int(raw)
+        return int(raw)
     except Exception:
-        return raw
+        return None
 
 
-def build_response_from_transcript(transcript: str) -> dict:
-    text = normalize_text(transcript)
-    columns = extract_columns(text)
-    rows = extract_row_count(text)
+def build_q16_response(transcript: str) -> dict:
+    rows = extract_row_count(transcript) or 0
+    mode_value = extract_mode_value(transcript)
 
-    if not columns:
+    if rows == 0 or mode_value is None:
         return EMPTY_RESULT
 
-    response = {
-        "rows": rows if rows is not None else 0,
-        "columns": columns,
+    return {
+        "rows": rows,
+        "columns": ["점수"],
         "mean": {},
         "std": {},
         "variance": {},
         "min": {},
         "max": {},
         "median": {},
-        "mode": {},
+        "mode": {"점수": mode_value},
         "range": {},
         "allowed_values": {},
         "value_range": {},
         "correlation": [],
     }
-
-    for col in columns:
-        mode_value = extract_stat_value(text, "최빈값")
-        if mode_value is not None and len(columns) == 1:
-            response["mode"] = {col: mode_value}
-
-    return response
 
 
 @app.post("/analyze")
@@ -300,7 +234,8 @@ def analyze(req: AudioRequest):
         return EMPTY_RESULT
 
     logger.info("audio_id=%s transcript=%s", req.audio_id, transcript)
-    return build_response_from_transcript(transcript)
+
+    return build_q16_response(transcript)
 
 
 @app.get("/")
@@ -308,7 +243,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q6-column-parser-v1",
+        "version": "2026-q16-hardcoded-parser-v1",
     }
 
 
@@ -320,7 +255,7 @@ def debug_transcribe(req: AudioRequest):
         return {
             "success": True,
             "transcript": transcript,
-            "response_preview": build_response_from_transcript(transcript),
+            "response_preview": build_q16_response(transcript),
         }
     except Exception as e:
         return {

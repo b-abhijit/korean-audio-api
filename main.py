@@ -143,8 +143,18 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
-def hangul_number_to_int(text: str) -> int | None:
+def clean_numeric_phrase(text: str) -> str:
     text = text.strip()
+    text = text.replace(",", "")
+    text = re.sub(r"[.!?]+$", "", text)
+    text = re.sub(r"(입니다|이에요|예요|입니다요|이다)$", "", text)
+    text = text.strip()
+    return text
+
+
+def hangul_number_to_int(text: str) -> int | None:
+    text = clean_numeric_phrase(text)
+
     if text.isdigit():
         return int(text)
 
@@ -196,11 +206,12 @@ def extract_column_name(text: str) -> str | None:
 
 
 def extract_stat_value(text: str, korean_stat_name: str) -> Any | None:
-    m = re.search(rf"{korean_stat_name}은\s*([가-힣0-9.]+)", text)
+    m = re.search(rf"{korean_stat_name}은\s*([^\s]+)", text)
     if not m:
         return None
 
-    raw = m.group(1)
+    raw = clean_numeric_phrase(m.group(1))
+
     num = hangul_number_to_int(raw)
     if num is not None:
         return num
@@ -268,7 +279,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-spoken-stats-only-v1",
+        "version": "2026-spoken-stats-only-v2",
     }
 
 

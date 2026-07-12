@@ -63,7 +63,7 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
         raise RuntimeError("AIPIPE_TOKEN environment variable is not set")
 
     files = {"file": ("audio.wav", audio_bytes, "application/octet-stream")}
-    data = {"model": "whisper-1", "language": "ko"}
+    data = {"model": "gpt-4o-mini-transcribe", "language": "ko"}
     headers = {"Authorization": f"Bearer {AIPIPE_TOKEN}"}
 
     resp = requests.post(

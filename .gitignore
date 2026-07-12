@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+server.log
+.env
+sample_audio/
+test_client.py
+.venv/
+venv/

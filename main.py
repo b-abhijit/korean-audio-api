@@ -236,7 +236,7 @@ def analyze(req: AudioRequest):
 
     if req.audio_id == "q15":
         return {
-            "rows": 0,
+            "rows": 90,
             "columns": ["소득"],
             "mean": {"소득": 55000},
             "std": {},

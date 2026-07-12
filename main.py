@@ -263,7 +263,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q6-q15-q16-final-v2",
+        "version": "2026-q15-max-fixed-v3",
     }
 
 
@@ -271,10 +271,11 @@ def health_check():
 def debug_transcribe(req: AudioRequest):
     audio_bytes = base64.b64decode(req.audio_base64)
     try:
+        raw_name = transcribe_column_name(audio_bytes)
         return {
             "success": True,
-            "transcribed_column_name": transcribe_column_name(audio_bytes),
-            "cleaned_column_name": clean_column_name(transcribe_column_name(audio_bytes)),
+            "transcribed_column_name": raw_name,
+            "cleaned_column_name": clean_column_name(raw_name),
         }
     except Exception as e:
         return {

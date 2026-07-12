@@ -126,6 +126,7 @@ def to_py(obj):
 def stats_for_df(df: pd.DataFrame) -> dict:
     rows = int(len(df))
     columns = list(df.columns)
+
     mean = {}
     std = {}
     variance = {}
@@ -141,27 +142,29 @@ def stats_for_df(df: pd.DataFrame) -> dict:
     for col in columns:
         raw = df[col]
         coerced = pd.to_numeric(raw, errors="coerce")
+
         if coerced.notna().all():
             s = coerced
             numeric_cols[col] = s
+
             mean[col] = float(round(s.mean(), 4))
             std[col] = float(round(s.std(), 4)) if len(s) > 1 else 0.0
             variance[col] = float(round(s.var(), 4)) if len(s) > 1 else 0.0
+
             is_all_int = bool((s % 1 == 0).all())
             min_val = s.min()
             max_val = s.max()
+
             min_v[col] = int(min_val) if is_all_int else float(min_val)
             max_v[col] = int(max_val) if is_all_int else float(max_val)
             median[col] = float(s.median())
             mode[col] = None if s.mode().empty else to_py(s.mode().iloc[0])
             range_v[col] = float(max_val - min_val)
             value_range[col] = [min_v[col], max_v[col]]
+
         else:
             s_str = raw.astype(str)
             mode[col] = None if s_str.mode().empty else to_py(s_str.mode().iloc[0])
-            min_v[col] = str(s_str.min())
-            max_v[col] = str(s_str.max())
-            median[col] = None
             allowed_values[col] = sorted(s_str.dropna().unique().tolist())
 
     correlation = []

@@ -224,7 +224,7 @@ def analyze(req: AudioRequest):
             "allowed_values": {},
             "value_range": {},
             "correlation": [],
-        }
+        } 
 
     try:
         df, samplerate = decode_audio_to_dataframe(audio_bytes)

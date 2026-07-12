@@ -100,6 +100,12 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
     return re.sub(r"[\s.,!?~·]", "", text)
 
 
+def clean_column_name(name: str) -> str:
+    name = re.sub(r"[\s.,!?~·]", "", name)
+    name = re.sub(r"(은|는|이|가|을|를|의)$", "", name)
+    return name
+
+
 def to_py(obj):
     if isinstance(obj, dict):
         return {k: to_py(v) for k, v in obj.items()}
@@ -161,7 +167,6 @@ def stats_for_df(df: pd.DataFrame) -> dict:
             mode[col] = None if s.mode().empty else to_py(s.mode().iloc[0])
             range_v[col] = float(max_val - min_val)
             value_range[col] = [min_v[col], max_v[col]]
-
         else:
             s_str = raw.astype(str)
             mode[col] = None if s_str.mode().empty else to_py(s_str.mode().iloc[0])
@@ -238,8 +243,11 @@ def analyze(req: AudioRequest):
         return EMPTY_RESULT
 
     try:
-        column_name = transcribe_column_name(audio_bytes)
+        column_name = clean_column_name(transcribe_column_name(audio_bytes))
     except Exception:
+        column_name = "channel_0"
+
+    if not column_name:
         column_name = "channel_0"
 
     if len(df.columns) == 1:
@@ -255,7 +263,7 @@ def health_check():
     return {
         "status": "ok",
         "message": "Korean Audio Dataset API is running",
-        "version": "2026-q6-q16-patched-v2",
+        "version": "2026-q6-q15-q16-final-v2",
     }
 
 
@@ -263,7 +271,11 @@ def health_check():
 def debug_transcribe(req: AudioRequest):
     audio_bytes = base64.b64decode(req.audio_base64)
     try:
-        return {"success": True, "transcribed_column_name": transcribe_column_name(audio_bytes)}
+        return {
+            "success": True,
+            "transcribed_column_name": transcribe_column_name(audio_bytes),
+            "cleaned_column_name": clean_column_name(transcribe_column_name(audio_bytes)),
+        }
     except Exception as e:
         return {
             "success": False,

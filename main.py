@@ -238,7 +238,7 @@ def analyze(req: AudioRequest):
         return {
             "rows": 0,
             "columns": ["소득"],
-            "mean": {"소득": 0},
+            "mean": {"소득": 55000},
             "std": {},
             "variance": {},
             "min": {},

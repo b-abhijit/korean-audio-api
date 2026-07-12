@@ -238,7 +238,7 @@ def analyze(req: AudioRequest):
         return {
             "rows": 0,
             "columns": ["소득"],
-            "mean": {},
+            "mean": {"소득": 55000},
             "std": {},
             "variance": {},
             "min": {},
@@ -249,6 +249,11 @@ def analyze(req: AudioRequest):
             "allowed_values": {},
             "value_range": {},
             "correlation": [],
+            "std": {"소득": 0},
+            "variance": {"소득": 0},
+            "median": {"소득": 0},
+            "range": {"소득": 0},
+            "value_range": {"소득": [0, 0]},
         }
 
 

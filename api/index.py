@@ -222,32 +222,49 @@ def build_response_from_df(df: pd.DataFrame) -> dict:
     allowed_values = {}
     value_range = {}
 
+    numeric_cols_for_corr = {}
+
     for col in columns:
-        s = df[col]
+        raw = df[col]
 
-        mode[col] = safe_mode(s)
+        # Try to coerce to numeric first -- if every value converts
+        # cleanly, treat the whole column as numeric even if it was
+        # stored as object dtype due to mixed int/float/str parsing.
+        coerced = pd.to_numeric(raw, errors="coerce")
+        is_fully_numeric = coerced.notna().all()
 
-        if is_numeric_series(s):
+        if is_fully_numeric:
+            s = coerced
+            numeric_cols_for_corr[col] = s
+
+            mode[col] = safe_mode(s)
             mean[col] = float(round(s.mean(), 4))
             std[col] = float(round(s.std(), 4)) if len(s) > 1 else 0.0
             variance[col] = float(round(s.var(), 4)) if len(s) > 1 else 0.0
-            min_v[col] = float(s.min()) if pd.api.types.is_float_dtype(s) else int(s.min())
-            max_v[col] = float(s.max()) if pd.api.types.is_float_dtype(s) else int(s.max())
+
+            is_all_int = (s % 1 == 0).all()
+            min_val = s.min()
+            max_val = s.max()
+            min_v[col] = int(min_val) if is_all_int else float(min_val)
+            max_v[col] = int(max_val) if is_all_int else float(max_val)
             median[col] = float(s.median())
-            range_v[col] = float(s.max() - s.min())
+            range_v[col] = float(max_val - min_val)
             value_range[col] = [min_v[col], max_v[col]]
         else:
-            min_v[col] = str(s.min())
-            max_v[col] = str(s.max())
+            # Non-numeric (categorical/string) column -- always compare
+            # as strings so mixed types never crash min()/max().
+            s_str = raw.astype(str)
+            mode[col] = safe_mode(s_str)
+            min_v[col] = str(s_str.min())
+            max_v[col] = str(s_str.max())
             median[col] = None
-            allowed_values[col] = sorted([str(v) for v in s.dropna().unique().tolist()])
+            allowed_values[col] = sorted(s_str.dropna().unique().tolist())
 
-    numeric_df = df.select_dtypes(include=[np.number])
-    correlation = (
-        numeric_df.corr().round(4).values.tolist()
-        if numeric_df.shape[1] > 1
-        else []
-    )
+    if len(numeric_cols_for_corr) > 1:
+        numeric_df = pd.DataFrame(numeric_cols_for_corr)
+        correlation = numeric_df.corr().round(4).values.tolist()
+    else:
+        correlation = []
 
     result = {
         "rows": rows,

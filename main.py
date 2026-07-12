@@ -28,7 +28,9 @@ app = FastAPI(title="Korean Audio Dataset API")
 # (Vercel: Project Settings -> Environment Variables; Render: Environment
 # tab). NEVER hardcode it here or commit it to git.
 AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN")
-AIPIPE_TRANSCRIBE_URL = "https://aipipe.org/openai/v1/audio/transcriptions"
+AIPIPE_GEMINI_URL = (
+    "https://aipipe.org/geminiv1beta/models/gemini-2.5-flash-lite:generateContent"
+)
 
 
 class AudioRequest(BaseModel):
@@ -57,23 +59,47 @@ def transcribe_column_name(audio_bytes: bytes) -> str:
     """
     The audio clip contains a short spoken Korean word/phrase that names
     the data column (e.g. "점수" = "score"). Transcribe it via AI Pipe's
-    hosted OpenAI-compatible transcription endpoint (no local model).
+    Gemini proxy, sent as a JSON body (required so AI Pipe can read the
+    request and track cost -- multipart/form-data uploads are rejected).
     """
     if not AIPIPE_TOKEN:
         raise RuntimeError("AIPIPE_TOKEN environment variable is not set")
 
-    files = {"file": ("audio.wav", audio_bytes, "application/octet-stream")}
-    data = {"model": "gpt-4o-mini-transcribe", "language": "ko"}
-    headers = {"Authorization": f"Bearer {AIPIPE_TOKEN}"}
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {AIPIPE_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"inline_data": {"mime_type": "audio/wav", "data": audio_b64}},
+                    {
+                        "text": (
+                            "Transcribe the single spoken Korean word or short "
+                            "phrase in this audio clip. Reply with ONLY the "
+                            "Korean text, nothing else -- no punctuation, no "
+                            "explanation, no romanization."
+                        )
+                    },
+                ],
+            }
+        ]
+    }
 
-    resp = requests.post(
-        AIPIPE_TRANSCRIBE_URL, headers=headers, files=files, data=data, timeout=30
-    )
+    resp = requests.post(AIPIPE_GEMINI_URL, headers=headers, json=payload, timeout=30)
     if not resp.ok:
         # Surface AI Pipe's actual error message instead of a generic
         # "400 Bad Request" with no context.
         raise RuntimeError(f"AI Pipe returned {resp.status_code}: {resp.text}")
-    text = resp.json().get("text", "")
+
+    data = resp.json()
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Unexpected Gemini response shape: {data}")
 
     # Strip whitespace and common punctuation so "점수." or " 점수 " -> "점수"
     cleaned = re.sub(r"[\s.,!?~·]", "", text)
